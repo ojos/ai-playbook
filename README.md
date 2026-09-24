@@ -36,7 +36,7 @@
 | `loop-workflow.md` | ループコーディング運用の規範（受け入れ検証の機械ゲート化・verify ランナー契約・収束） |
 | `loop-coding-guide.md` | ループコーディングの解説ガイド（従来ワークフローとの違い・考え方。`loop-workflow.md` の解説版） |
 | `intake/` | intake テンプレート、相談テンプレート、判定 reason code |
-| `templates/` | 導入用の雛形 8 種（`entry.md` 実行環境の入口ファイル / `project-ai-rules.md` プロジェクト共通ルール / `second-opinion-review.sh` 第二意見レビューの実装例 / `copilot-review.yml` リモート最終ゲートの要求側の実装例 / `review-gate.yml` リモート最終ゲートの確認側の実装例 / `claude-skill-intake.md` Claude Code の intake 起点スキル / `claude-agent-explorer.md`・`claude-agent-implementer.md` Claude Code の委譲先エージェント定義） |
+| `templates/` | 導入用の雛形 11 種（`entry.md` 実行環境の入口ファイル / `project-ai-rules.md` プロジェクト共通ルール / `second-opinion-review.sh` 第二意見レビューの実装例 / `copilot-review.yml` リモート最終ゲートの要求側の実装例 / `review-gate.yml` リモート最終ゲートの確認側の実装例 / `review-usable.sh` 確認側が使う「読まれたか」の判定本体 / `check-review-usable.sh` 上記の表駆動の自己検査 / `claude-skill-intake.md` Claude Code の intake 起点スキル / `claude-skill-land.md` Claude Code の PR 確認・マージ起点スキル / `claude-agent-explorer.md`・`claude-agent-implementer.md` Claude Code の委譲先エージェント定義） |
 | `.gitignore` | このパッケージを開発するときの追跡除外設定。規範ではないため配布・取り込みの対象外（`shared-ai-rules.md` 14 章） |
 
 共通ルールの補足として、AI からの質問は一問ずつ行い、各質問には意図を添え、回答は選択肢優先で提示します。
@@ -168,7 +168,9 @@ cp .ai-playbook/templates/entry.md .github/copilot-instructions.md
 
 ### 3. プロジェクト固有の値を埋める
 
-`.github/project-ai-rules.md` の記入欄（機密の読み取り元、生成物、作業状況の記録先、レビューの起動方法）を埋めます。
+`.github/project-ai-rules.md` のうち、**既定と違うことをする項目だけ**を書き換えます。
+
+**1 文字も変えずに使っても正本として成立します。** 雛形は「書かれていない項目は『未定』ではなく『全体共通ルールの既定に従う』という宣言である」と冒頭で述べており、既定値が決まる項目には既定値が書いてあります。`（…を記載。**既定はありません**）` の形で残っている項目だけが、**共通の既定を置けないためプロジェクトごとに決める必要がある**ものです。
 
 ### 4. 第二意見レビューを用意する（任意）
 
@@ -184,18 +186,23 @@ chmod +x scripts/second-opinion-review.sh
 
 この雛形は認証手段の違う 2 つの CLI から選べます（`--engine gemini|antigravity`。既定は `gemini`）。どの CLI をどう導入するかはプロジェクト層が決めます。判定ロジックはエンジンによらず 1 か所に集約してあり、エンジンごとに違うのは CLI 名・認証・差分の渡し方だけです。
 
-### 5. intake 起点を配線する（Claude Code を使う場合・任意）
+### 5. Claude Code 向けスキルを配線する（Claude Code を使う場合・任意）
 
-入口ファイルは「読まれる」だけで「起動する」機構を持ちません。Claude Code では skill が起点になるため、実装依頼を受けた瞬間に intake 判定へ入る配線として、規範を参照するだけの薄いスキルを 1 つ置きます。
+入口ファイルは「読まれる」だけで「起動する」機構を持ちません。Claude Code では skill が起点になるため、規範を参照するだけの薄いスキルを置きます。
 
 ```bash
 # Claude Code の機構はスキル定義ファイル名を SKILL.md に固定するため、
 # lower-kebab-case の雛形名から改名して配置する（shared-ai-rules.md 8 章の例外）。
-mkdir -p .claude/skills/intake
+mkdir -p .claude/skills/intake .claude/skills/land
 cp .ai-playbook/templates/claude-skill-intake.md .claude/skills/intake/SKILL.md
+cp .ai-playbook/templates/claude-skill-land.md .claude/skills/land/SKILL.md
 ```
 
-このスキルは判定基準・`reason_code` 一覧・intake 票の項目定義を複製せず、`.ai-playbook/intake/` と `.ai-playbook/role-contracts/intake-manager.md` を参照するだけです。Copilot 等 skill 機構を持たない実行環境は、同じ規範を各環境の機構で参照する形になります。
+**intake 起点** は、実装依頼を受けた瞬間に intake 判定へ入るための配線です。判定基準・`reason_code` 一覧・intake 票の項目定義を複製せず、`.ai-playbook/intake/` と `.ai-playbook/role-contracts/intake-manager.md` を参照するだけです。
+
+**land 起点** は、PR を作ったあと利用者の指示を待たずに確認・マージへ進むための配線です。指摘を解決済みとみなす条件、打ち切りの規則、指摘の却下、差分の読み方を複製せず、`.ai-playbook/review-workflow.md` と `.ai-playbook/task-playbooks/pr-review.md` を参照するだけです。マージの承認そのものは、実行環境がツール実行の前に判定を差し込める機構を持つ場合に、その機構でマージ直前に確認を挟む形で担保します（`.ai-playbook/role-contracts/closer.md`「手動承認は機構で保証する」）。この機構自体は雛形に含まれないため、導入先で別途用意してください。
+
+Copilot 等 skill 機構を持たない実行環境は、同じ規範を各環境の機構で参照する形になります。
 
 あわせて、委譲先のエージェント定義を置きます。`model` と `tools` を frontmatter で固定するのが目的で、**指示文による呼びかけは迂回できますが、実行環境が読む機構は迂回できません**（`shared-ai-rules.md` 12 章）。
 
@@ -211,15 +218,18 @@ cp .ai-playbook/templates/claude-agent-implementer.md .claude/agents/implementer
 
 ### 6. リモート最終ゲートを配線する（GitHub を使う場合・任意）
 
-`review-workflow.md` のリモート最終ゲートを機構で自動要求する場合、要求が 1 回に限定される雛形と、要求されたことを確認する雛形を配置します。
+`review-workflow.md` のリモート最終ゲートを機構で自動要求する場合、要求が 1 回に限定される雛形と、要求されたことを確認する雛形、確認側が使う判定スクリプト 2 本を配置します。
 
 ```bash
-mkdir -p .github/workflows
+mkdir -p .github/workflows scripts
 cp .ai-playbook/templates/copilot-review.yml .github/workflows/copilot-review.yml
 cp .ai-playbook/templates/review-gate.yml .github/workflows/review-gate.yml
+cp .ai-playbook/templates/review-usable.sh scripts/review-usable.sh
+cp .ai-playbook/templates/check-review-usable.sh scripts/check-review-usable.sh
+chmod +x scripts/review-usable.sh scripts/check-review-usable.sh
 ```
 
-**2 本で 1 組です。** `copilot-review.yml` が要求し、`review-gate.yml` が要求されたことを別の契機（PR 更新・定期実行）から確認します（規範「要求されたことを別の契機で確認する」）。要求側の契機が届かないと最終ゲートが黙って抜けるため、確認側だけを省くと、この節で塞ごうとしている穴がそのまま残ります。確認側は要求しません。
+**4 本で 1 組です。** `copilot-review.yml` が要求し、`review-gate.yml` が要求されたこと、および要求・投稿されたレビューが実際に読まれたことを、別の契機（PR 更新・定期実行）から確認します（規範「要求されたことを別の契機で確認する」「要求された ≠ 読まれた」）。要求側の契機が届かないと最終ゲートが黙って抜けるため、確認側だけを省くと、この節で塞ごうとしている穴がそのまま残ります。確認側は要求しません。「読まれたか」の判定は `review-usable.sh` が持ち、`review-gate.yml` は一覧を集めて渡すだけです。`check-review-usable.sh` はその判定を表で確かめる自己検査で、GitHub 上でしか動かない `review-gate.yml` に判定を埋めないことで、手元と CI の両方から機械的に確かめられるようにしています。
 
 雛形は 1 つの実装例です。規範が要求するのは「要求回数を 1 回に限定すること」と「別の契機で確認すること」で、同じ性質を満たせば別の手段でかまいません。前提条件（レビュー機構の有効化・トークン）は雛形の冒頭コメントに記載しています。`review-gate.yml` は required check にしません（理由は規範側）。
 
@@ -234,7 +244,7 @@ cp .ai-playbook/templates/review-gate.yml .github/workflows/review-gate.yml
 | 2. 3 層構造を配線する | 実施する（`.github/project-ai-rules.md` と入口ファイル 2 種） |
 | 3. プロジェクト固有の値を埋める | **実施しない。** 内容の判断が必要で自動化できないため、生成後に手で埋める |
 | 4. 第二意見レビューを用意する | 実施する（`scripts/second-opinion-review.sh` を実行可能属性付きで配置） |
-| 5. intake 起点を配線する | Claude Code の装備を選んだ場合のみ実施する |
+| 5. Claude Code 向けスキルを配線する | Claude Code の装備を選んだ場合のみ実施する（intake 起点・land 起点とも） |
 | 6. リモート最終ゲートを配線する | 該当のレビュー機構を選んだ場合のみ実施する |
 
 DCB は雛形の内容を持たず、このパッケージの `templates/` をコピーするだけです。正本はこのパッケージ側にあります。
