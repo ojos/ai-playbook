@@ -37,7 +37,7 @@ gh pr view N --json number,title,state,isDraft,mergeable,headRefName,headRefOid,
 - **利用者の指示なしに始めたのに、作業ディレクトリで checkout しているブランチ（`git branch --show-current`）が `headRefName` と一致しない。** 「この会話で作った PR だけ」を、文章だけでなく確かめられる形にしたものです。別セッションは自分の worktree で作業するため、その PR のブランチはここに checkout されていません。番号を示した指示や `/land N` で始めた場合は、この条件を見ません
 - `baseRefName` が `main` でない。**この手順は、main への直接マージを前提にしています。** 別のブランチ向けの PR に使うと、9 で無関係な main の実行を見届けることになります。main へのマージで配備が走るかどうかはプロジェクトによって異なります（9 を参照）。
 
-### 2. CI とリモート最終ゲートの完了を待つ
+### 2. CI の完了を待つ（置く場合はリモート最終ゲートも）
 
 **利用者の入力を、再開のきっかけにしません。** これまでは PR を作った時点でターンを終えていたため、利用者が指示するまで確認そのものが始まりませんでした。このスキルが解消したいのはその点です。待つときは、終わると通知が来て自動で再開する形（Bash の `run_in_background`）を使います。起動したら、実在を確かめてから離れます（上記「`run_in_background` で待ちを起こしたら、実在を確かめてから離れます」）。
 
@@ -78,12 +78,25 @@ echo CHECKS_NOT_ATTACHED; exit 1
 gh pr checks N --watch --interval 30
 ```
 
+**ここから先は、このプロジェクトがリモート最終ゲートを置いているかどうかで分かれます（`.github/project-ai-rules.md`「リモート最終ゲート」）。**
+
+**置いている場合**:
+
 - `review-gate` は、opened のときは 120 秒の猶予を置いてから判定します。すぐに出なくても異常ではありません。
 - 失敗の形は 2 つあり、**扱いが違います。**
   - **status の `review-gate` が failure**（説明文が `Copilot code review was never requested`）: Copilot のレビューが要求されていません。**ジョブのエラー文に書かれている手順どおりに、1 回だけ手で要求します。**
   - **ジョブの `check` だけが失敗し、status の `review-gate` が failure でない**: レビューの有無を API から読めなかっただけです（`review-gate.yml` はこのとき status を付けません）。**要求しません。** 要求済みのレビューを二重に要求すると、「1 回だけ要求する」が壊れます。3 のループで待ち、届かなければ止めて報告します。
+- 待てたら 3 へ進みます。
 
-### 3. Copilot のレビューが届くのを待つ
+**置いていない場合**:
+
+- `second-opinion-gate` の status を確認します。**`failure`**（説明文が `no second-opinion record for this head`）なら、push 後に記録を投稿していません。`bash scripts/second-opinion-record.sh post` を実行してから、もう一度 `gh pr checks N --watch` で待ち直します。ローカルに記録が残っていない場合（別セッションが push した等）は、このブランチで第二意見を回し直す必要があるため、止めて報告します。
+- status が付かない（確かめられなかった）場合は、「記録が無い」と同じに扱いません。しばらく待ってから読み直します。
+- **3 は行いません。4 へ進みます。**
+
+### 3. （リモート最終ゲートを置く場合のみ）Copilot のレビューが届くのを待つ
+
+**このプロジェクトがリモート最終ゲートを置いていない場合、この手順は行いません。** 2 で確認した `second-opinion-gate` の status（記録の有無）が、この代わりです。
 
 `review-gate` が緑でも、それは「要求された」ことを示すだけです。**レビュー本文が届くまで待ちます。** 次のループを Bash の `run_in_background` で回します（フォアグラウンドの sleep は使えません）。ここでも、起動したら実在を確かめてから離れます（上記）。
 
@@ -117,7 +130,7 @@ CI が緑でも、Copilot の指摘が 0 件でも、読まずにマージしま
 
 - `gh pr diff N` を読み、`pr-review.md` の順に確認します（受け入れ条件との対応、次に高リスクの観点）。
 - **その差分がこの PR のものか確かめます。** 直前のブランチに居たまま `git checkout -b` すると、前の PR のコミットが相乗りします。この場合、レビューも CI も緑のまま通ってしまいます。`commits` の見出しと `gh pr diff N --name-only`（変更したファイルの一覧）が、PR の主題と合っているかを見ます。
-- 本文に `Closes #NNN` があるか確かめます。書かれていないと、マージしても issue が open のまま残ります。
+- 本文とコミットメッセージ（`commits` の `messageHeadline` / `messageBody`）の**両方**に `Closes #NNN` があるか確かめます。本文に無ければ、マージしても issue が open のまま残ります。コミットメッセージ側は、PR 本文の `Closes` を GitHub が認識しないことがあるための保険です（`.ai-playbook/shared-ai-rules.md`「6. コミットメッセージ規約」）。**コミットメッセージ側に無ければ、8 で squash の本文に `Closes #NNN` を足してマージします。** 保険のためだけにコミットを積み直して CI をやり直すことはしません。
 
 ### 5. マージの前提を確かめる
 
@@ -143,6 +156,7 @@ CI が緑でも、Copilot の指摘が 0 件でも、読まずにマージしま
 - **PR のブランチが checkout されている worktree で直します。** 他のセッションと共有しているプライマリの作業ツリーでは直しません。
 - push の前にローカル事前ゲート（`.ai-playbook/loop-workflow.md`「ローカル事前ゲート（push 前）」）を通します。実行体（受け入れ検証・第二意見・identity の検査をまとめて通す入口）はプロジェクト層が用意します。
 - push したら、2 に戻って CI を待ちます。**Copilot には再要求しません。**
+- **リモート最終ゲートを置いていない場合、push のたびに `bash scripts/second-opinion-record.sh post` を実行します。** 記録は head SHA に紐づくため、直すたびに打ち直さないと、2 の `second-opinion-gate` がこの新しい head を「記録が無い」と判定します。
 - **次のどれかにあたれば、マージせずに止めて報告します。**
   - 直すには仕様の判断が要る。または直すと PR の範囲を超える
   - 直したあとも CI が赤い
@@ -167,6 +181,8 @@ gh pr merge N --squash --match-head-commit "$sha"
 
 該当する行が出たら、その指示を除いた本文をファイルに書き、`gh pr merge N --squash --match-head-commit "$sha" --body-file <そのファイル>` で本文を差し替えてマージします。
 
+4 でコミットメッセージ側に `Closes #NNN` が無かった場合も、同じく `--body-file` で本文を差し替えます。本文には `Closes #NNN` の行を足します（CI を飛ばす指示があれば、それも除きます）。squash の本文をどう組み立てる設定であっても、`--body-file` で渡した本文がマージコミットのメッセージになるため、そこから issue が閉じます。
+
 - **確認が、この手順での承認です。** マージ実行の前に確認を挟む機構（`.ai-playbook/role-contracts/closer.md`「手動承認は機構で保証する」）がマージの直前に確認を挟みます。承認されればマージが実行されます。
 - **head が動いていたためにマージが失敗したら、新しい SHA で打ち直しません。** 確かめていないコミットが入ったということなので、止めて報告します。
 - **拒否されたら、再試行しません。REST や GraphQL といった別の経路も使いません。** そこで止めて、理由を聞きます。
@@ -175,7 +191,7 @@ gh pr merge N --squash --match-head-commit "$sha"
 
 ### 9. マージ後を確かめる
 
-- `closingIssuesReferences` に挙がっている issue が閉じたかを見ます。
+- `closingIssuesReferences` に挙がっている issue と、本文・コミットメッセージの `Closes #NNN` に書かれた issue の**両方**が閉じたかを見ます。GitHub が `Closes` を認識しなかったときは `closingIssuesReferences` が空になるため、それだけを見ると、閉じていない issue を確かめないまま通り抜けます。閉じていなければ、マージコミットを示すコメントを付けて手で閉じ、報告に書きます。
 - main で走る CI の実行を、**マージコミットの SHA で特定してから**、最後まで見届けます。「main の最新の実行」で選ぶと、直後に入った別のマージの実行を見てしまい、この PR の反映を確かめたことになりません。対象の workflow ファイル名はプロジェクト層で定義します（例: `ci.yml`）。
 
   ```bash
