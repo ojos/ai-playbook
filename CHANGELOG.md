@@ -6,6 +6,20 @@
 >
 > 同じ理由で、issue 参照は `ojos/ai-packages-dev#NNN` の形で書いてください。裸の `#NNN` は GitHub のオートリンクが**配布先リポジトリの issue** として解決するため、配布後は存在しない issue や無関係な issue を指します。
 
+## v0.8.0
+
+### Summary
+- **`templates/claude-entry-imports.md` を足した**（ojos/ai-packages-dev#441）。Claude Code の `CLAUDE.md` の末尾に足す節で、`@.ai-playbook/shared-ai-rules.md` と `@.github/project-ai-rules.md` の 2 行で規範の全文を毎セッションの文脈へ取り込む。パスを挙げるだけでは、エージェントが自分から読みにいかない限り規範は文脈に載らない。`templates/entry.md` は実行環境に中立のまま変えていない。README の単独導入の手順に `cat .ai-playbook/templates/claude-entry-imports.md >> CLAUDE.md` を足した。雛形は 16 種になった。
+- **`templates/second-opinion-record.sh post` を、確認側が数える記録を作れたときだけ成功させた**（ojos/ai-packages-dev#440）。gh が認証しているアカウントが PR の作者でなければ、投稿せずに失敗する（確認側は作者のコメントしか数えないため、作者以外の投稿は成功と表示されても使えない記録になっていた）。既に投稿済みかの判定も、作者が書いたコメントに絞った（作者以外が同じ印を先に書いていると、作者の post が「投稿済み」で終わり、確認側は赤のままになっていた）。雛形は 15 種のまま。
+- **`templates/second-opinion-gate.yml` が数える記録を、書き手が PR の作者と一致するコメントに改めた（`author_association` を条件から外した）**（ojos/ai-packages-dev#436）。`author_association` は読む側の視点で変わり、組織のメンバーシップを公開していない作者は、Actions の `GITHUB_TOKEN` から `MEMBER` と返らない。そのため組織所有のリポジトリでは、その人の PR が記録を投稿しても常に `failure` になっていた（メンバーシップを公開して再実行すると緑になることを、利用側で実測した）。メンバーシップの非公開は GitHub の既定である。対象はフォークでない PR だけなので、作者の一致だけで「他人のコメントで緑にしない」（ojos/ai-packages-dev#370）は保てる。雛形は 15 種のまま。
+- **第二意見の記録と確認側を、リモート最終ゲートの有無にかかわらず置く標準の機構層へ改めた**（ojos/ai-packages-dev#437）。`review-workflow.md` が「置かない場合の代わり」としていた記述を「常に置く標準の機構層」へ改め、「置かない場合に失う性質」の表はリモート最終ゲート固有の性質として残した。`templates/claude-skill-land.md` は `second-opinion-gate` の確認と failure 時の `post`、push のたびの `post` を両方の構成に共通の手順にし、`templates/project-ai-rules.md` も両方の構成で投稿する前提にした。
+- **`shared-ai-rules.md` 16 章に、台帳の開始時刻と失効の扱いを足した**（ojos/ai-packages-dev#433）。セッションの識別子に使う開始時刻は、ホストの時刻の付け直しやタイムゾーンで変わらない値で表す（変わると、動いているセッションの登録が失効とみなされ、保護が黙って切れる）。実行のあいだだけ持つ登録（マージ・作業ツリーの git 操作・重いゲート）は、失効をその登録の時刻から数え、更新で延ばさない。
+- **`templates/review-gate.yml` と `templates/second-opinion-gate.yml` の `actions/checkout@v4` を `@v7` へ上げた**（ojos/ai-packages-dev#432）。v4 は Node.js 20 で動き、GitHub Actions で非推奨の警告が出る。v5 以降は Node.js 24 で動く。どちらの雛形も `pull_request_target` / `workflow_run` を契機に持たず、checkout が保存する認証情報にも頼らないので、v6・v7 の変更（認証情報の保存先、fork の PR の checkout の禁止）の影響は受けない。雛形は 15 種のまま。
+
+### 移行
+- 雛形から写した `.github/workflows/review-gate.yml` / `second-opinion-gate.yml` は自動では更新されない。`actions/checkout@v4` を `@v7` へ書き換えてください。セルフホストのランナーでは、Actions Runner v2.327.1 以降が要る。
+- 雛形から写した `.github/workflows/second-opinion-gate.yml` は自動では更新されない。`has_record()` の `mine` の条件から `author_association` の比較を外し、書き手の login の一致だけにしてください（ojos/ai-packages-dev#436）。
+
 ## v0.7.0
 
 ### Summary
