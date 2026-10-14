@@ -126,8 +126,11 @@
 #   その行の有無で「判定に到達したか」を見るため、出さなければ記録も残らない。
 #
 # issue / PR の文脈:
-#   ブランチ名が issue 番号を含む形（`feat/123-...` 等）なら、その issue の本文
-#   （scope・acceptance を含む）をプロンプトへ載せる。加えて、差分の追加行と
+#   ブランチ名が issue 番号を含む形（`feat/123-x`・`123-x`・`issue-123`・`gh-123_x` 等。
+#   規則はセッション協調のフックと同じ BRANCH_ISSUE_RE）なら、その issue の本文
+#   （scope・acceptance を含む）をプロンプトへ載せる。**限界として、日付や版を含む名前
+#   （`2026-10-14-hotfix` など）も番号として読む。** その番号の issue があれば、関係の無い
+#   issue が文脈に載る（フックも同じ名前を同じく読む。規則を揃えることを優先した。#593）。加えて、差分の追加行と
 #   コミットメッセージが参照する `#番号`（リポジトリへの書き込み権を持つ人が作成したものに限り、
 #   上限件数まで）についても、状態と（issue なら）acceptance の節を取得して載せる。
 #   いずれも `gh` 経由で、取得できなくても止めない（ゲートではないため）。
@@ -189,6 +192,10 @@ RANGE=""
 # --base <rev>: 索引と <rev> の差（コミット済みとステージ済みの両方）を対象にする。
 BASE=""
 ENGINE="${SECOND_OPINION_ENGINE:-gemini}"
+# エンジンが --engine / SECOND_OPINION_ENGINE のどちらでも指定されたか。既定の gemini に
+# 落ちたことを、ほかの CLI が入っている環境で知らせるために使う（下記）。
+ENGINE_SPECIFIED=0
+[[ -n "${SECOND_OPINION_ENGINE:-}" ]] && ENGINE_SPECIFIED=1
 MODEL="${SECOND_OPINION_MODEL:-}"
 RUNS="${SECOND_OPINION_RUNS:-${GEMINI_REVIEW_RUNS:-1}}"
 
@@ -229,7 +236,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --range)  need_value "$1" "${2-}"; RANGE="$2";  shift 2 ;;
     --base)   need_value "$1" "${2-}"; BASE="$2";   shift 2 ;;
-    --engine) need_value "$1" "${2-}"; ENGINE="$2"; shift 2 ;;
+    --engine) need_value "$1" "${2-}"; ENGINE="$2"; ENGINE_SPECIFIED=1; shift 2 ;;
     --model)  need_value "$1" "${2-}"; MODEL="$2";  shift 2 ;;
     --runs)   need_value "$1" "${2-}"; RUNS="$2";   shift 2 ;;
     -h|--help) usage; exit 0 ;;
@@ -275,6 +282,24 @@ ENGINE_JSON=0
 # 判定を JSON で行うエンジンが強制する回答の形。判定そのものはモデルに出させず、
 # category から下の BLOCKING_CATEGORIES を見てこのスクリプトが決める。
 SCHEMA_FILE="$__SCRIPT_DIR/second-opinion-schema.json"
+
+# エンジンの指定が無いまま既定の gemini を使うとき、ほかのエンジンの CLI が入っていれば
+# 知らせる。両方を入れた構成で、.env を写し忘れた作業ツリーなどが黙って gemini で回るのを
+# 気づけるようにするため。gemini だけの構成では出さない（ノイズを増やさない）。
+# 判定（終了コード・LGTM）は変えない。文面に `(engine=` の形を含めない（loop-gate.sh が
+# 出力の最初の `(engine=` からエンジン名を読んで記録に残すため）。
+#
+# 回数の検査の後、エンジンの検査の前に置く。回数の誤りで止まる実行では出さず、gemini の
+# CLI やキーが無くて止まる実行では、止まった理由（指定が無く gemini に落ちた）を先に示すため。
+if [[ "$ENGINE_SPECIFIED" -eq 0 && "$ENGINE" == "gemini" ]]; then
+  __other_clis=""
+  command -v agy >/dev/null 2>&1 && __other_clis="agy"
+  command -v codex >/dev/null 2>&1 && __other_clis="${__other_clis:+$__other_clis / }codex"
+  if [[ -n "$__other_clis" ]]; then
+    echo "[second-opinion] notice: エンジンの指定が無いので既定の gemini を使います（$__other_clis の CLI も見つかっています）。" >&2
+    echo "[second-opinion] notice: 別のエンジンで回すには --engine <gemini|antigravity|codex> か、.env の SECOND_OPINION_ENGINE で指定してください。" >&2
+  fi
+fi
 
 # エンジンの検査は CLI を呼ぶ前に済ませる。未知の値をそのまま先へ流すと、
 # 「コマンドが無い」というエンジン不在のエラーに化けて、綴り間違いだと分からない。
@@ -389,23 +414,35 @@ fi
 # （黙って「文脈つきでレビューした」ことにしない）。
 issue_context=""
 branch_issue_num=""
+# ブランチ名から issue 番号を取る規則。セッション協調のフック（session-coord-hook.sh の
+# ISSUE_BRANCH_RE）と同じ規則にそろえてある。利用者がどちらの形で枝を切っても、2 つの
+# 仕組みが同じ番号を読むようにするため。番号は 3 つ目の括弧（BASH_REMATCH[3]）に入る。
+# 先頭は 0 を許さず 6 桁まで、直後は - か _ か末尾。複数箇所に一致するときは最初の一致を使う。
+BRANCH_ISSUE_RE='(^|/)(issue-|gh-)?([1-9][0-9]{0,5})([-_]|$)'
 resolve_issue_context() {
   local branch num body
   branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
-  # feat/123-... / fix/456-... のような形から数字を取る。枝の名前に数字が無ければ
-  # 何もしない（推測で別の issue を引かない）。
-  num="$(printf '%s' "$branch" | sed -n 's|^[a-z]*/\([0-9][0-9]*\)-.*|\1|p')"
+  # feat/123-x・123-x・issue-123・gh-123_x のような形から数字を取る。枝の名前に数字が
+  # 無ければ何もしない（推測で別の issue を引かない）。
+  num=""
+  if [[ "$branch" =~ $BRANCH_ISSUE_RE ]]; then
+    num="${BASH_REMATCH[3]}"
+  fi
   branch_issue_num="$num"
   if [[ -z "$num" ]]; then
-    echo "[second-opinion] 枝の名前から issue 番号を取れませんでした（文脈なしでレビューします）: $branch" >&2
+    echo "[second-opinion] 枝の名前から issue 番号を取れませんでした（文脈なしでレビューします）: $branch（feat/123-x・123-x・issue-123 のように番号を含めると読めます）" >&2
     return 0
   fi
+  # 引けなかったときは branch_issue_num を空に戻す。下の「参照された issue」は、この番号を
+  # 二重に載せないよう一覧から外すため、残したままだと、本文も状態も載らなくなる。
   if ! command -v gh >/dev/null 2>&1; then
     echo "[second-opinion] gh が無いため issue #$num を引けません（文脈なしでレビューします）" >&2
+    branch_issue_num=""
     return 0
   fi
   if ! body="$(gh issue view "$num" --json title,body --jq '"# issue #'"$num"' " + (.title // "") + "\n\n" + (.body // "")' 2>/dev/null)"; then
     echo "[second-opinion] issue #$num を引けませんでした（文脈なしでレビューします）" >&2
+    branch_issue_num=""
     return 0
   fi
   issue_context="$body"
@@ -1224,7 +1261,7 @@ $PROMPT" --output-format json --json-schema "$SCHEMA_FILE")
     # codex は標準入力に流す（stdin_file は codex 以外のとき /dev/null のまま）。
     # codex は秘密の無い作業場所で、許可リストの環境変数だけを渡して起動する
     # （run_cwd / run_prefix。他のエンジンは現在の場所・そのまま）。
-    output="$(cd "$run_cwd" && ${run_prefix[@]+"${run_prefix[@]}"} $CLI "${args[@]}" <"$stdin_file" 2>"$stderr_file")" || {
+    output="$(cd "$run_cwd" && ${run_prefix[@]+"${run_prefix[@]}"} "$CLI" "${args[@]}" <"$stdin_file" 2>"$stderr_file")" || {
       echo "error: second opinion failed (engine=$ENGINE, run $run/$RUNS$( [[ "$chunk_count" -gt 1 ]] && echo ", chunk $chunk_idx/$chunk_count" ))" >&2
       cat "$stderr_file" >&2
       printf '%s\n' "$output" >&2
